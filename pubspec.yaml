@@ -21,3 +21,5 @@ platforms:
   macos:
   web:
   windows:
+dependencies:
+  mutex: ^3.1.0

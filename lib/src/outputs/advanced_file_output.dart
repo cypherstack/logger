@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:mutex/mutex.dart';
+
 import '../log_level.dart';
 import '../log_output.dart';
 import '../output_event.dart';
@@ -167,32 +169,41 @@ class AdvancedFileOutput extends LogOutput {
     }
   }
 
+  final _m = Mutex();
+
   void _flushBuffer() {
-    if (_sink == null) return; // Wait until _sink becomes available
-    for (final event in _buffer) {
-      _sink?.writeAll(event.lines, Platform.isWindows ? '\r\n' : '\n');
-      _sink?.writeln();
-    }
-    _buffer.clear();
+    // Wait until _sink becomes available
+    if (_sink == null || _m.isLocked) return;
+
+    _m.protect(() async {
+      final writeCount = _buffer.length;
+      for (int i = 0; i < writeCount; i++) {
+        _sink?.writeAll(_buffer[i].lines, Platform.isWindows ? '\r\n' : '\n');
+        _sink?.writeln();
+      }
+      _buffer.removeRange(0, writeCount);
+    });
   }
 
   Future<void> _updateTargetFile() async {
-    try {
-      if (await _file.exists() &&
-          await _file.length() > _maxFileSizeKB * 1024) {
-        // Rotate the log file
+    await _m.protect(() async {
+      try {
+        if (await _file.exists() &&
+            await _file.length() > _maxFileSizeKB * 1024) {
+          // Rotate the log file
+          await _closeSink();
+          await _file.rename('$_path/${_fileNameFormatter(DateTime.now())}');
+          await _deleteRotatedFiles();
+          await _openSink();
+        }
+      } catch (e, s) {
+        print(e);
+        print(s);
+        // Try creating another file and working with it
         await _closeSink();
-        await _file.rename('$_path/${_fileNameFormatter(DateTime.now())}');
-        await _deleteRotatedFiles();
         await _openSink();
       }
-    } catch (e, s) {
-      print(e);
-      print(s);
-      // Try creating another file and working with it
-      await _closeSink();
-      await _openSink();
-    }
+    });
   }
 
   Future<void> _openSink() async {
